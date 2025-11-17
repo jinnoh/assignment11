@@ -459,7 +459,6 @@ def train_bert(
     return epoch_val_probs, epoch_te_probs, epoch_val_acc
 
 
-
 def train_tfidf(df_tr, df_val, df_te):
     vec = TfidfVectorizer(
         max_features=200000,
@@ -506,30 +505,47 @@ def run_category(train_path, test_path, out_path):
         lr=1e-5,
     )
 
-    alphas = [0.0, 0.25, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+    alphas = [0.0, 0.2, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.8, 1.0]
 
     best_global_acc = -1.0
     best_global_te_preds = None
 
     for ep_idx, (p_bert_val, p_bert_te) in enumerate(zip(epoch_val_probs, epoch_te_probs), start=1):
-
         best_a = 0.0
-        best_acc = -1.0
+        best_acc_mix = -1.0
+        best_mix_te = None
+
         for a in alphas:
             p_mix_val = a * p_bert_val + (1.0 - a) * p_lr_val
             y_pred_val = p_mix_val.argmax(axis=1)
             acc = accuracy_score(y_val, y_pred_val)
-            if acc > best_acc:
-                best_acc = acc
+            if acc > best_acc_mix:
+                best_acc_mix = acc
                 best_a = a
+                best_mix_te = a * p_bert_te + (1.0 - a) * p_lr_te
 
-        print(f"[epoch {ep_idx}] best alpha = {best_a}, ensemble val_acc = {best_acc:.4f}")
+        X_val_stack = np.concatenate([p_lr_val, p_bert_val], axis=1)
+        meta_clf = LogisticRegression(max_iter=200, n_jobs=-1)
+        meta_clf.fit(X_val_stack, y_val)
+        y_pred_val_stack = meta_clf.predict(X_val_stack)
+        acc_stack = accuracy_score(y_val, y_pred_val_stack)
 
+        if acc_stack > best_acc_mix:
+            epoch_acc = acc_stack
+            X_te_stack = np.concatenate([p_lr_te, p_bert_te], axis=1)
+            y_te_ep = meta_clf.predict(X_te_stack)
+            method = "stack"
+        else:
+            epoch_acc = best_acc_mix
+            y_te_ep = best_mix_te.argmax(axis=1)
+            method = "alpha"
 
-        p_mix_te = best_a * p_bert_te + (1.0 - best_a) * p_lr_te
-        y_te_ep = p_mix_te.argmax(axis=1)
+        print(
+            f"[epoch {ep_idx}] best alpha = {best_a:.2f}, "
+            f"mix_val_acc = {best_acc_mix:.4f}, stack_val_acc = {acc_stack:.4f}, "
+            f"chosen = {method}, epoch_val_acc = {epoch_acc:.4f}"
+        )
 
- 
         out_ep = pd.DataFrame(
             {
                 "userID": df_te["user_id"],
@@ -539,8 +555,8 @@ def run_category(train_path, test_path, out_path):
         )
         out_ep.to_csv(f"predictions_Category_epoch{ep_idx}.csv", index=False)
 
-        if best_acc > best_global_acc:
-            best_global_acc = best_acc
+        if epoch_acc > best_global_acc:
+            best_global_acc = epoch_acc
             best_global_te_preds = y_te_ep
 
     if best_global_te_preds is None:
@@ -556,7 +572,6 @@ def run_category(train_path, test_path, out_path):
     out.to_csv(out_path, index=False)
     print(f"Final best ensemble val_acc = {best_global_acc:.4f}")
     print(f"Wrote per-epoch files predictions_Category_epoch*.csv and final {out_path}")
-
 
 
 def train_read_lr_rf(df, n_neg=1, seed=0):
@@ -653,7 +668,6 @@ def main():
     pairs_read_path = "pairs_Read.csv"
     train_cat_path = "train_Category.json.gz"
     test_cat_path = "test_Category.json.gz"
-
 
     # df_all = pd.read_csv(inter_path, compression="gzip")
     # df_all = df_all[["userID", "bookID", "rating"]]
